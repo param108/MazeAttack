@@ -1,7 +1,7 @@
 package main
 
 import (
-	"github.com/param108/MazeChallenge/models"
+	"github.com/param108/MazeAttack/models"
 )
 
 type Response struct {

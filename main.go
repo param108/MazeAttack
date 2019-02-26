@@ -11,8 +11,12 @@ import (
 	"time"
 )
 
-var GlobalObjectList []models.Object
 var CurrentUserID = 0
+var mutex *sync.Mutex
+var ServerSecret string
+var UserSecrets = make(map[string]string)
+var Moves = []models.Move{}
+var GlobalObjectList []models.Object
 
 type Profile struct {
 	Name    string
@@ -42,7 +46,8 @@ type MoveResponse struct {
 }
 
 type CreateMessage struct {
-	User string
+	User         string
+	ServerSecret string
 }
 
 type CreateResponse struct {
@@ -56,26 +61,18 @@ type CreateResponse struct {
 
 var posmap map[string]*Pos
 var maze [][]string
-var mutex *sync.Mutex
 
 func createPositionMap() {
 	posmap = map[string]*Pos{}
 }
 
 func main() {
-	maxx = 51
-	maxy = 50
 	rand.Seed(time.Now().UTC().UnixNano())
 	mutex = &sync.Mutex{}
 
-	createPositionMap()
-
-	maze = createMaze()
-	checkMaze()
-	printMaze(maze)
-	http.HandleFunc("/create/", createUser)
+	createMaze()
+	http.HandleFunc("/login/", createUser)
 	http.HandleFunc("/move/", moveUser)
-
 	http.ListenAndServe(":3000", nil)
 }
 
@@ -219,21 +216,6 @@ func moveUser(w http.ResponseWriter, r *http.Request) {
 
 }
 
-func checkMaze() {
-	for j := 0; j < maxy; j++ {
-		success := false
-		for i := 0; i < maxx; i++ {
-			if maze[j][i] == " " {
-				success = true
-				break
-			}
-			if !success {
-				maze[j][i] = " "
-			}
-		}
-	}
-}
-
 func foo(w http.ResponseWriter, r *http.Request) {
 	profile := Profile{"Alex", []string{"snowboarding", "programming"}}
 
@@ -247,44 +229,28 @@ func foo(w http.ResponseWriter, r *http.Request) {
 	w.Write(js)
 }
 
-func getPlace() string {
-	ch := rand.Int() % 2
-	switch ch {
-	case 0:
-		return " "
-	case 1:
-		return "#"
+func is_spot_empty(X, Y int) bool {
+	for _, obj := range GlobalObjectList {
+		if X == obj.X && Y == obj.Y {
+			return false
+		}
 	}
-	return " "
+	return true
 }
 
-func createMaze() [][]string {
-	ret := [][]string{}
-	for j := 0; j < maxy; j++ {
-		row := []string{}
-		for i := 0; i < maxx; i++ {
-			if i%2 == 0 {
-				row = append(row, " ")
-				continue
-			}
-			row = append(row, getPlace())
+func createMaze() {
+	for i := 0; i < 15; i++ {
+		newWall := models.Object{C: "WALL", X: (rand.Int() % 50) + 1, Y: (rand.Int() % 50) + 1}
+		for !is_spot_empty(newWall.X, newWall.Y) {
+			newWall = models.Object{C: "WALL", X: (rand.Int() % 50) + 1, Y: (rand.Int() % 50) + 1}
 		}
-		ret = append(ret, row)
+		GlobalObjectList = append(GlobalObjectList, newWall)
 	}
 
-	// place dest.
-	ch := rand.Int() % maxy
-
-	ret[ch][maxx-1] = "E"
-	posmap["BADDIE"] = &Pos{maxx - 1, ch}
-	return ret
-}
-
-func printMaze(maze [][]string) {
-	for j := 0; j < maxy; j++ {
-		for i := 0; i < maxx; i++ {
-			fmt.Print(maze[j][i])
-		}
-		fmt.Print("\n")
+	newBombShed := models.Object{C: "BOMBSHED", X: (rand.Int() % 50) + 1, Y: (rand.Int() % 50) + 1}
+	for !is_spot_empty(newBombShed.X, newBombShed.Y) {
+		newBombShed = models.Object{C: "BOMBSHED", X: (rand.Int() % 50) + 1, Y: (rand.Int() % 50) + 1}
 	}
+	GlobalObjectList = append(GlobalObjectList, newBombShed)
+
 }
