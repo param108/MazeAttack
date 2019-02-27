@@ -41,3 +41,12 @@ func (scr *Screen) Destroy() {
 		termbox.Close()
 	}
 }
+
+func (scr *Screen) WaitForQuit() {
+	for {
+		e := termbox.PollEvent()
+		if e.Ch == rune('q') {
+			return
+		}
+	}
+}

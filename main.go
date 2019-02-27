@@ -1,13 +1,16 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"github.com/param108/MazeAttack/models"
+	"github.com/param108/MazeAttack/screen"
 	"io/ioutil"
 	"math/rand"
 	"net/http"
 	"os"
+	"os/signal"
 	"sync"
 	"time"
 )
@@ -18,6 +21,8 @@ var ServerSecret string
 var UserSecrets = make(map[string]string)
 var Moves = []models.Move{}
 var GlobalObjectList []models.Object
+var ServerScreen *screen.Screen
+var ServerWaitingForPlayers = true
 
 type Profile struct {
 	Name    string
@@ -64,14 +69,29 @@ func loginMonitor(in []chan int, out chan<- int) {
 	for i := 0; i < len(in); i++ {
 		<-in[i]
 	}
-
+	ServerWaitingForPlayers = false
 	for i := 0; i < len(in); i++ {
 		out <- i
 	}
+
 }
 
 var loginMonitorInputs = []chan int{}
 var loginMonitorOutput = make(chan int)
+var logfile = "logfile.txt"
+
+func log(s string) {
+	f, err := os.OpenFile(logfile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err == nil {
+		f.Write([]byte(s))
+		f.Close()
+	} else {
+		Server.Shutdown(context.TODO())
+		fmt.Println("HELP", err.Error())
+		panic(err.Error())
+	}
+
+}
 
 func setupLoginMonitor() {
 	for i := 0; i < 4; i++ {
@@ -80,6 +100,54 @@ func setupLoginMonitor() {
 
 	go loginMonitor(loginMonitorInputs, loginMonitorOutput)
 }
+
+func UIFramesTick(delay int) {
+	ticker := time.NewTicker(time.Duration(delay) * time.Second)
+
+	for _ = range ticker.C {
+		log("Tick\n")
+		if ServerWaitingForPlayers {
+			fmt.Println("Waiting For Players")
+			fmt.Println("Number Joined: ", len(UserSecrets))
+			for k := range UserSecrets {
+				fmt.Println("Joined User: ", k)
+			}
+			continue
+		}
+
+		if ServerScreen == nil {
+			ServerScreen, _ = screen.NewScreen()
+		}
+
+		mutex.Lock()
+		move(Moves, GlobalObjectList)
+		screenObjectList := Convert(GlobalObjectList)
+		log(fmt.Sprint(GlobalObjectList))
+		ServerScreen.Update(screenObjectList)
+		mutex.Unlock()
+	}
+
+}
+
+var Server *http.Server
+
+func waitForInterrupt(c chan os.Signal) {
+	<-c
+	if ServerScreen != nil {
+		ServerScreen.Destroy()
+	}
+	Server.Shutdown(context.TODO())
+}
+
+func waitForQuit() {
+	ServerScreen.WaitForQuit()
+	if ServerScreen != nil {
+		ServerScreen.Destroy()
+	}
+	Server.Shutdown(context.TODO())
+
+}
+
 func main() {
 
 	if len(os.Args) != 3 {
@@ -93,11 +161,21 @@ func main() {
 
 	rand.Seed(time.Now().UTC().UnixNano())
 	mutex = &sync.Mutex{}
+	Server = &http.Server{Addr: ":" + os.Args[2]}
 
 	createMaze()
 	http.HandleFunc("/login/", createUser)
 	http.HandleFunc("/move/", moveUser)
-	http.ListenAndServe(":"+os.Args[2], nil)
+	http.HandleFunc("/fire/", fire)
+	http.HandleFunc("/place_bomb/", placeBomb)
+
+	c := make(chan os.Signal, 1)
+
+	signal.Notify(c, os.Interrupt)
+	go waitForInterrupt(c)
+	go waitForQuit()
+	go UIFramesTick(1)
+	Server.ListenAndServe()
 }
 
 func ServerAuth(auth string) bool {
@@ -154,6 +232,7 @@ func createUser(w http.ResponseWriter, r *http.Request) {
 	UserSecrets[msg.User] = randomString(10)
 	myID := CurrentUserID
 	CurrentUserID++
+	placeUser(msg.User)
 	mutex.Unlock()
 
 	// wait for 4 to login
@@ -225,6 +304,17 @@ func createUser(w http.ResponseWriter, r *http.Request) {
 	return false
 }*/
 
+func isUserDead(username string) bool {
+	for _, obj := range GlobalObjectList {
+		if obj.C == "HERO" && obj.Username == username {
+			if obj.Dead > 0 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func moveUser(w http.ResponseWriter, r *http.Request) {
 	b, err := ioutil.ReadAll(r.Body)
 	defer r.Body.Close()
@@ -262,6 +352,11 @@ func moveUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if isUserDead(msg.User) {
+		http.Error(w, "You are already dead", 403)
+		mutex.Unlock()
+		return
+	}
 	for _, mv := range Moves {
 		if mv.Username == msg.User {
 			// already moved this turn
@@ -278,14 +373,12 @@ func moveUser(w http.ResponseWriter, r *http.Request) {
 
 	rc := <-done
 	if rc < 0 {
-		http.Error(w, err.Error(), 409)
+		http.Error(w, "Invalid", 409)
 		return
 	}
 
 	success := MoveResponse{}
 	success.Objects = GlobalObjectList
-
-	fmt.Println("moved user", msg.User)
 
 	output, err := json.Marshal(success)
 	if err != nil {
@@ -334,6 +427,95 @@ func fire(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if isUserDead(msg.User) {
+		http.Error(w, "You are already dead", 403)
+		mutex.Unlock()
+		return
+	}
+
+	for _, mv := range Moves {
+		if mv.Username == msg.User {
+			// already moved this turn
+			http.Error(w, "Forbidden", 403)
+			mutex.Unlock()
+			return
+		}
+	}
+
+	for _, obj := range GlobalObjectList {
+		if obj.Username == msg.User && obj.C == "BULLET" && obj.Dead == 0 {
+			// already fired a bullet
+			http.Error(w, "Forbidden", 403)
+			mutex.Unlock()
+			return
+		}
+	}
+	done := make(chan int)
+	Moves = append(Moves, models.Move{msg.User, "FIRE", msg.Direction, done})
+	log("FIRE:" + msg.Direction)
+	mutex.Unlock()
+
+	rc := <-done
+	if rc < 0 {
+		http.Error(w, "Could not fire", 409)
+		return
+	}
+	success := MoveResponse{}
+	success.Objects = GlobalObjectList
+
+	output, err := json.Marshal(success)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	w.Header().Set("content-type", "application/json")
+	w.Write(output)
+
+}
+
+func placeBomb(w http.ResponseWriter, r *http.Request) {
+	b, err := ioutil.ReadAll(r.Body)
+	defer r.Body.Close()
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+
+	mutex.Lock()
+
+	// Unmarshal
+	msg := MoveMessage{}
+	err = json.Unmarshal(b, &msg)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		mutex.Unlock()
+		return
+	}
+
+	if !ServerAuth(msg.ServerSecret) {
+		http.Error(w, "Forbidden", 403)
+		mutex.Unlock()
+		return
+	}
+
+	if userSecret, ok := UserSecrets[msg.User]; ok {
+		if userSecret != msg.UserSecret {
+			http.Error(w, "Forbidden", 403)
+			mutex.Unlock()
+			return
+		}
+	} else {
+		http.Error(w, "Forbidden", 403)
+		mutex.Unlock()
+		return
+	}
+
+	if isUserDead(msg.User) {
+		http.Error(w, "You are already dead", 403)
+		mutex.Unlock()
+		return
+	}
+
 	for _, mv := range Moves {
 		if mv.Username == msg.User {
 			// already moved this turn
@@ -344,19 +526,17 @@ func fire(w http.ResponseWriter, r *http.Request) {
 	}
 
 	done := make(chan int)
-	Moves = append(Moves, models.Move{msg.User, "MOVE", msg.Direction, done})
+	Moves = append(Moves, models.Move{msg.User, "PLACE", msg.Direction, done})
 
 	mutex.Unlock()
 
 	rc := <-done
 	if rc < 0 {
-		http.Error(w, err.Error(), 500)
+		http.Error(w, "Could not place bomb", 409)
 		return
 	}
 	success := MoveResponse{}
 	success.Objects = GlobalObjectList
-
-	fmt.Println("moved user", msg.User)
 
 	output, err := json.Marshal(success)
 	if err != nil {
@@ -381,7 +561,10 @@ func foo(w http.ResponseWriter, r *http.Request) {
 	w.Write(js)
 }
 
-func is_spot_empty(X, Y int) bool {
+func isSpotEmpty(X, Y int) bool {
+	if X <= 0 || X >= 50 || Y <= 0 || Y >= 50 {
+		return false
+	}
 	for _, obj := range GlobalObjectList {
 		if X == obj.X && Y == obj.Y {
 			return false
@@ -390,17 +573,27 @@ func is_spot_empty(X, Y int) bool {
 	return true
 }
 
+func placeUser(username string) {
+	newUser := models.Object{C: "HERO", Username: username, X: (rand.Int() % 50) + 1,
+		Y: (rand.Int() % 50) + 1}
+	for !isSpotEmpty(newUser.X, newUser.Y) {
+		newUser = models.Object{C: "HERO", Username: username, X: (rand.Int() % 50) + 1,
+			Y: (rand.Int() % 50) + 1}
+	}
+	GlobalObjectList = append(GlobalObjectList, newUser)
+}
+
 func createMaze() {
 	for i := 0; i < 15; i++ {
 		newWall := models.Object{C: "WALL", X: (rand.Int() % 50) + 1, Y: (rand.Int() % 50) + 1}
-		for !is_spot_empty(newWall.X, newWall.Y) {
+		for !isSpotEmpty(newWall.X, newWall.Y) {
 			newWall = models.Object{C: "WALL", X: (rand.Int() % 50) + 1, Y: (rand.Int() % 50) + 1}
 		}
 		GlobalObjectList = append(GlobalObjectList, newWall)
 	}
 
 	newBombShed := models.Object{C: "BOMBSHED", X: (rand.Int() % 50) + 1, Y: (rand.Int() % 50) + 1}
-	for !is_spot_empty(newBombShed.X, newBombShed.Y) {
+	for !isSpotEmpty(newBombShed.X, newBombShed.Y) {
 		newBombShed = models.Object{C: "BOMBSHED", X: (rand.Int() % 50) + 1, Y: (rand.Int() % 50) + 1}
 	}
 	GlobalObjectList = append(GlobalObjectList, newBombShed)

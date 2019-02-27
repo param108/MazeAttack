@@ -2,6 +2,7 @@ package main
 
 import (
 	"github.com/param108/MazeAttack/models"
+	"github.com/param108/MazeAttack/screen"
 )
 
 type Response struct {
@@ -96,9 +97,9 @@ func moveBullet(bullet models.Object, objects []models.Object) []models.Object {
 	newY := bullet.Y
 	switch bullet.Direction {
 	case "UP":
-		newY++
-	case "DOWN":
 		newY--
+	case "DOWN":
+		newY++
 	case "RIGHT":
 		newX++
 	case "LEFT":
@@ -126,11 +127,11 @@ func moveBullet(bullet models.Object, objects []models.Object) []models.Object {
 		hitting("BULLET", newX, newY, objects) ||
 		hitting("HERO", newX, newY, objects) {
 		return replace_bullet(bullet, models.Object{Username: bullet.Username, C: "BULLET",
-			X: bullet.X, Y: bullet.Y, Dead: 1}, objects)
+			X: bullet.X, Y: bullet.Y, Dead: 1, Direction: bullet.Direction}, objects)
 	}
 
 	return replace_bullet(bullet, models.Object{C: "BULLET", X: newX, Y: newY, Dead: 0,
-		Username: bullet.Username}, objects)
+		Username: bullet.Username, Direction: bullet.Direction}, objects)
 
 }
 
@@ -140,9 +141,9 @@ func moveHero(done chan<- Response, heroMoved chan<- int, hero models.Object,
 	newY := hero.Y
 	switch dir {
 	case "UP":
-		newY++
-	case "DOWN":
 		newY--
+	case "DOWN":
+		newY++
 	case "RIGHT":
 		newX++
 	case "LEFT":
@@ -279,4 +280,29 @@ func move(moves []models.Move, objects []models.Object) []models.Object {
 		response.done <- response.response
 	}
 	return objects
+}
+
+func Convert(objects []models.Object) []screen.Object {
+	ret := []screen.Object{}
+	for _, obj := range objects {
+		switch obj.C {
+		case "WALL":
+			ret = append(ret, screen.NewWall(obj.X, obj.Y))
+		case "HERO":
+			if obj.Dead == 0 {
+				ret = append(ret, screen.NewHero(obj.X, obj.Y, obj.Username))
+			}
+		case "BOMBSHED":
+			ret = append(ret, screen.NewBombShed(obj.X, obj.Y))
+		case "BOMB":
+			if obj.Expire > 0 {
+				ret = append(ret, screen.NewBomb(obj.X, obj.Y))
+			}
+		case "BULLET":
+			if obj.Dead == 0 {
+				ret = append(ret, screen.NewBullet(obj.X, obj.Y))
+			}
+		}
+	}
+	return ret
 }
