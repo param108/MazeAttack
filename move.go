@@ -187,6 +187,8 @@ func moveHero(done chan<- Response, heroMoved chan<- int, hero models.Object,
 			Username: hero.Username}
 	}
 
+	response.response = 0
+	done <- response
 	return models.Object{C: "HERO", X: newX, Y: newY, Bombs: hero.Bombs,
 		Username: hero.Username}
 }
@@ -239,6 +241,7 @@ func move(moves []models.Move, objects []models.Object) []models.Object {
 				objects = append(objects, models.Object{C: "BULLET", X: hero.X,
 					Y:        hero.Y,
 					Username: hero.Username, Direction: m.Direction})
+				responseChan <- Response{m.Done, 0}
 			} else if m.Move == "PLACE" {
 				if hero.Bombs > 0 {
 					if can_place_bomb(hero.X+1, hero.Y, objects) {
@@ -250,6 +253,9 @@ func move(moves []models.Move, objects []models.Object) []models.Object {
 							models.Object{C: "HERO", X: hero.X,
 								Y: hero.Y, Bombs: 0,
 								Username: hero.Username}, objects)
+						responseChan <- Response{m.Done, 0}
+					} else {
+						responseChan <- Response{m.Done, -1}
 					}
 				}
 			}
@@ -265,7 +271,9 @@ func move(moves []models.Move, objects []models.Object) []models.Object {
 		}
 	}
 
+	// update objects now
 	GlobalObjectList = objects
+	Moves = []models.Move{}
 	close(responseChan)
 	for response := range responseChan {
 		response.done <- response.response

@@ -7,6 +7,7 @@ import (
 	"io/ioutil"
 	"math/rand"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 )
@@ -32,17 +33,14 @@ type Pos struct {
 }
 
 type MoveMessage struct {
-	Move string
-	User string
+	Direction    string
+	User         string
+	UserSecret   string
+	ServerSecret string
 }
 
 type MoveResponse struct {
-	Error   string
-	Message string
-	X       int
-	Y       int
-	BaddieX int
-	BaddieY int
+	Objects []models.Object
 }
 
 type CreateMessage struct {
@@ -51,29 +49,69 @@ type CreateMessage struct {
 }
 
 type CreateResponse struct {
-	Error   string
-	Message string
-	X       int
-	Y       int
-	BaddieX int
-	BaddieY int
+	UserSecret string
 }
 
 var posmap map[string]*Pos
 var maze [][]string
 
 func createPositionMap() {
+
 	posmap = map[string]*Pos{}
 }
 
+func loginMonitor(in []chan int, out chan<- int) {
+	for i := 0; i < len(in); i++ {
+		<-in[i]
+	}
+
+	for i := 0; i < len(in); i++ {
+		out <- i
+	}
+}
+
+var loginMonitorInputs = []chan int{}
+var loginMonitorOutput = make(chan int)
+
+func setupLoginMonitor() {
+	for i := 0; i < 4; i++ {
+		loginMonitorInputs = append(loginMonitorInputs, make(chan int))
+	}
+
+	go loginMonitor(loginMonitorInputs, loginMonitorOutput)
+}
 func main() {
+
+	if len(os.Args) != 3 {
+		fmt.Printf("%v <secret key> <port>", os.Args[0])
+		return
+	}
+
+	ServerSecret = os.Args[1]
+
+	setupLoginMonitor()
+
 	rand.Seed(time.Now().UTC().UnixNano())
 	mutex = &sync.Mutex{}
 
 	createMaze()
 	http.HandleFunc("/login/", createUser)
 	http.HandleFunc("/move/", moveUser)
-	http.ListenAndServe(":3000", nil)
+	http.ListenAndServe(":"+os.Args[2], nil)
+}
+
+func ServerAuth(auth string) bool {
+	return auth == ServerSecret
+}
+
+func randomString(length int) string {
+	digits := "ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890_"
+	ret := ""
+	for i := 0; i < length; i++ {
+		ret = ret + string(digits[rand.Int()%len(digits)])
+	}
+
+	return ret
 }
 
 func createUser(w http.ResponseWriter, r *http.Request) {
@@ -86,31 +124,44 @@ func createUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	mutex.Lock()
-	defer mutex.Unlock()
 	msg := CreateMessage{}
 	// Unmarshal
 	err = json.Unmarshal(b, &msg)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
+		mutex.Unlock()
 		return
 	}
 
-	if _, ok := posmap[msg.User]; ok {
-		response := CreateResponse{}
-		response.Message = "Already Exists"
-		response.Error = "true"
-		output, _ := json.Marshal(response)
-		http.Error(w, string(output), 409)
+	if !ServerAuth(msg.ServerSecret) {
+		http.Error(w, "Forbidden", 403)
+		mutex.Unlock()
 		return
 	}
-	posmap[msg.User] = &Pos{0, rand.Int() % maxy}
+
+	if CurrentUserID >= 4 {
+		http.Error(w, "everyone logged in already", 403)
+		mutex.Unlock()
+		return
+	}
+
+	if _, ok := UserSecrets[msg.User]; ok {
+		http.Error(w, "already logged in", 409)
+		mutex.Unlock()
+		return
+	}
+
+	UserSecrets[msg.User] = randomString(10)
+	myID := CurrentUserID
+	CurrentUserID++
+	mutex.Unlock()
+
+	// wait for 4 to login
+	loginMonitorInputs[myID] <- myID
+	<-loginMonitorOutput
+
 	success := CreateResponse{}
-	success.Error = "false"
-	success.Message = "Success"
-	success.X = posmap[msg.User].X
-	success.Y = posmap[msg.User].Y
-	success.BaddieX = posmap["BADDIE"].X
-	success.BaddieY = posmap["BADDIE"].Y
+	success.UserSecret = UserSecrets[msg.User]
 	fmt.Println("created user", msg.User)
 	output, err := json.Marshal(success)
 	if err != nil {
@@ -183,27 +234,128 @@ func moveUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	mutex.Lock()
-	defer mutex.Unlock()
 
 	// Unmarshal
 	msg := MoveMessage{}
 	err = json.Unmarshal(b, &msg)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
+		mutex.Unlock()
 		return
 	}
 
-	/*if !move(msg.Move, msg.User) {
-		http.Error(w, "Invalid Move", 500)
+	if !ServerAuth(msg.ServerSecret) {
+		http.Error(w, "Forbidden", 403)
+		mutex.Unlock()
 		return
-	}*/
+	}
+
+	if userSecret, ok := UserSecrets[msg.User]; ok {
+		if userSecret != msg.UserSecret {
+			http.Error(w, "Forbidden", 403)
+			mutex.Unlock()
+			return
+		}
+	} else {
+		http.Error(w, "Forbidden", 403)
+		mutex.Unlock()
+		return
+	}
+
+	for _, mv := range Moves {
+		if mv.Username == msg.User {
+			// already moved this turn
+			http.Error(w, "Forbidden", 403)
+			mutex.Unlock()
+			return
+		}
+	}
+
+	done := make(chan int)
+	Moves = append(Moves, models.Move{msg.User, "MOVE", msg.Direction, done})
+
+	mutex.Unlock()
+
+	rc := <-done
+	if rc < 0 {
+		http.Error(w, err.Error(), 409)
+		return
+	}
+
 	success := MoveResponse{}
-	success.Error = "false"
-	success.Message = "Success"
-	success.X = posmap[msg.User].X
-	success.Y = posmap[msg.User].Y
-	success.BaddieX = posmap["BADDIE"].X
-	success.BaddieY = posmap["BADDIE"].Y
+	success.Objects = GlobalObjectList
+
+	fmt.Println("moved user", msg.User)
+
+	output, err := json.Marshal(success)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	w.Header().Set("content-type", "application/json")
+	w.Write(output)
+
+}
+
+func fire(w http.ResponseWriter, r *http.Request) {
+	b, err := ioutil.ReadAll(r.Body)
+	defer r.Body.Close()
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+
+	mutex.Lock()
+
+	// Unmarshal
+	msg := MoveMessage{}
+	err = json.Unmarshal(b, &msg)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		mutex.Unlock()
+		return
+	}
+
+	if !ServerAuth(msg.ServerSecret) {
+		http.Error(w, "Forbidden", 403)
+		mutex.Unlock()
+		return
+	}
+
+	if userSecret, ok := UserSecrets[msg.User]; ok {
+		if userSecret != msg.UserSecret {
+			http.Error(w, "Forbidden", 403)
+			mutex.Unlock()
+			return
+		}
+	} else {
+		http.Error(w, "Forbidden", 403)
+		mutex.Unlock()
+		return
+	}
+
+	for _, mv := range Moves {
+		if mv.Username == msg.User {
+			// already moved this turn
+			http.Error(w, "Forbidden", 403)
+			mutex.Unlock()
+			return
+		}
+	}
+
+	done := make(chan int)
+	Moves = append(Moves, models.Move{msg.User, "MOVE", msg.Direction, done})
+
+	mutex.Unlock()
+
+	rc := <-done
+	if rc < 0 {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	success := MoveResponse{}
+	success.Objects = GlobalObjectList
+
 	fmt.Println("moved user", msg.User)
 
 	output, err := json.Marshal(success)
