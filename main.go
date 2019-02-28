@@ -101,6 +101,16 @@ func setupLoginMonitor() {
 	go loginMonitor(loginMonitorInputs, loginMonitorOutput)
 }
 
+func everyonesDead() bool {
+	count := 0
+	for _, obj := range GlobalObjectList {
+		if obj.C == "HERO" && obj.Dead == 0 {
+			count++
+		}
+	}
+	return count <= 1
+}
+
 func UIFramesTick(delay int) {
 	ticker := time.NewTicker(time.Duration(delay) * time.Second)
 
@@ -124,6 +134,13 @@ func UIFramesTick(delay int) {
 		screenObjectList := Convert(GlobalObjectList)
 		log(fmt.Sprint(GlobalObjectList))
 		ServerScreen.Update(screenObjectList)
+		if everyonesDead() {
+			if ServerScreen != nil {
+				ServerScreen.Destroy()
+			}
+			Server.Shutdown(context.TODO())
+			break
+		}
 		mutex.Unlock()
 	}
 
@@ -176,6 +193,12 @@ func main() {
 	go waitForQuit()
 	go UIFramesTick(1)
 	Server.ListenAndServe()
+	fmt.Println("Username", "Position")
+	for _, obj := range GlobalObjectList {
+		if obj.C == "HERO" {
+			fmt.Println(obj.Username, obj.Dead)
+		}
+	}
 }
 
 func ServerAuth(auth string) bool {

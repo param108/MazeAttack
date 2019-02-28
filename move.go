@@ -42,10 +42,10 @@ func explode(X, Y int, objects []models.Object) []models.Object {
 					Username: obj.Username,
 					Dead:     num_already_dead(objects)})
 			} else {
-				ret = append(ret, obj)
+				ret = append(ret, models.CopyObject(obj))
 			}
 		} else {
-			ret = append(ret, obj)
+			ret = append(ret, models.CopyObject(obj))
 		}
 	}
 	return ret
@@ -57,7 +57,7 @@ func replace_bomb(bomb models.Object, newBomb models.Object, objects []models.Ob
 		if obj.C == "BOMB" && obj.X == bomb.X && obj.Y == bomb.Y {
 			ret = append(ret, newBomb)
 		} else {
-			ret = append(ret, obj)
+			ret = append(ret, models.CopyObject(obj))
 		}
 	}
 
@@ -70,7 +70,7 @@ func replace_bullet(bullet models.Object, newBullet models.Object, objects []mod
 		if obj.C == "BULLET" && obj.X == bullet.X && obj.Y == bullet.Y {
 			ret = append(ret, newBullet)
 		} else {
-			ret = append(ret, obj)
+			ret = append(ret, models.CopyObject(obj))
 		}
 	}
 
@@ -221,7 +221,7 @@ func replace_hero(username string, newHero models.Object, objects []models.Objec
 		if obj.C == "HERO" && obj.Username == username {
 			ret = append(ret, newHero)
 		} else {
-			ret = append(ret, obj)
+			ret = append(ret, models.CopyObject(obj))
 		}
 	}
 
