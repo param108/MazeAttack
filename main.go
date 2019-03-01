@@ -53,6 +53,10 @@ type CreateMessage struct {
 	ServerSecret string
 }
 
+type StatusMessage struct {
+	ServerSecret string
+}
+
 type CreateResponse struct {
 	UserSecret string
 }
@@ -185,6 +189,7 @@ func main() {
 	http.HandleFunc("/move/", moveUser)
 	http.HandleFunc("/fire/", fire)
 	http.HandleFunc("/place_bomb/", placeBomb)
+	http.HandleFunc("/status/", status)
 
 	c := make(chan os.Signal, 1)
 
@@ -213,6 +218,43 @@ func randomString(length int) string {
 	}
 
 	return ret
+}
+
+func status(w http.ResponseWriter, r *http.Request) {
+
+	b, err := ioutil.ReadAll(r.Body)
+	defer r.Body.Close()
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+
+	mutex.Lock()
+	msg := StatusMessage{}
+	// Unmarshal
+	err = json.Unmarshal(b, &msg)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		mutex.Unlock()
+		return
+	}
+
+	if !ServerAuth(msg.ServerSecret) {
+		http.Error(w, "Forbidden", 403)
+		mutex.Unlock()
+	}
+	mutex.Unlock()
+	success := MoveResponse{}
+	success.Objects = GlobalObjectList
+
+	output, err := json.Marshal(success)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	w.Header().Set("content-type", "application/json")
+	w.Write(output)
+
 }
 
 func createUser(w http.ResponseWriter, r *http.Request) {
